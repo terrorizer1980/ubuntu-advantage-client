@@ -154,7 +154,7 @@ class UAClientBehaveConfig:
                     setattr(self, attr_name, None)
             if self.machine_type == "pro.aws":
                 if not has_aws_keys:
-                    raise RuntimeError(
+                    logging.warning(
                         "UACLIENT_BEHAVE_MACHINE_TYPE=pro.aws requires"
                         " the following env vars:\n"
                         " - UACLIENT_BEHAVE_AWS_ACCESS_KEY_ID\n"
@@ -293,6 +293,17 @@ def _should_skip_tags(context: Context, tags: "List") -> str:
                 if attr == "machine_type":
                     machine_type = ".".join(parts[idx + 1 :])
                     if val == machine_type:
+                        if val == "aws.pro":  # Ensure we have AWS creds
+                            has_aws_keys = bool(
+                                context.config.aws_access_key_id
+                                    and context.config.aws_secret_access_key
+                            )
+                            if not has_aws_key:
+                                return (
+                                    "Skipped: aws.pro machine_type requires"
+                                    " UACLIENT_BEHAVE_AWS_ACCESS_KEY_ID and"
+                                    " UACLIENT_BEHAVE_AWS_SECRET_KEY"
+                                )
                         break
                     return "Skipped: machine_type {} != {}".format(
                         val, machine_type
