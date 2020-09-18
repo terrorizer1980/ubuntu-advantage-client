@@ -319,7 +319,6 @@ class UAConfig:
         from uaclient.entitlements import ENTITLEMENT_CLASS_BY_NAME
 
         response = copy.deepcopy(DEFAULT_STATUS)
-        response.update(self._get_config_status())
         resources = get_available_resources(self)
 
         for resource in sorted(resources, key=lambda x: x["name"]):
@@ -375,7 +374,6 @@ class UAConfig:
         from uaclient.entitlements import ENTITLEMENT_CLASSES
 
         response = copy.deepcopy(DEFAULT_STATUS)
-        response.update(self._get_config_status())
         contractInfo = self.machine_token["machineTokenInfo"]["contractInfo"]
         response.update(
             {
@@ -432,8 +430,8 @@ class UAConfig:
             response = self._unattached_status()
         else:
             response = self._attached_status()
-        if os.getuid() == 0:
-            self.write_cache("status-cache", response)
+        response.update(self._get_config_status())
+        self.write_cache("status-cache", response)
 
         config_allow_beta = util.is_config_value_true(
             config=self.cfg, path_to_value="features.allow_beta"

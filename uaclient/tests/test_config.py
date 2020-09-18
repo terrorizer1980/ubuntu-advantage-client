@@ -21,7 +21,12 @@ from uaclient.entitlements import (
     ENTITLEMENT_CLASSES,
     ENTITLEMENT_CLASS_BY_NAME,
 )
-from uaclient.status import ContractStatus, UserFacingStatus
+from uaclient.status import (
+    ContractStatus,
+    UserFacingStatus,
+    UserFacingConfigStatus,
+    MESSAGE_ENABLE_REBOOT_REQUIRED_TMPL,
+)
 
 
 KNOWN_DATA_PATHS = (("machine-token", "machine-token.json"),)
@@ -757,14 +762,26 @@ class TestStatus:
         m_getuid.return_value = 1000
         assert expected_dt == cfg.status()["expires"]
 
+    @mock.patch("uaclient.config.util.should_reboot", return_value=True)
     @mock.patch("uaclient.config.os.getuid")
-    def test_nonroot_user_uses_cache_if_available(self, m_getuid, tmpdir):
+    def test_nonroot_user_uses_cache_and_updates_if_available(
+        self, m_getuid, tmpdir
+    ):
         m_getuid.return_value = 1000
 
         status = {"pass": True}
         cfg = UAConfig({"data_dir": tmpdir.strpath})
         cfg.write_cache("status-cache", status)
 
+        # Even non-root users can update configStatus details
+        status.update(
+            {
+                "configStatus": UserFacingConfigStatus.REBOOTREQUIRED.value,
+                "configStatusDetails": MESSAGE_ENABLE_REBOOT_REQUIRED_TMPL.format(
+                    operation="configuration changes"
+                ),
+            }
+        )
         assert status == cfg.status()
 
 
