@@ -737,8 +737,16 @@ def get_parser():
 def action_status(args, cfg):
     if not cfg:
         cfg = config.UAConfig()
+    status = cfg.status()
+    active_value = ua_status.UserFacingConfigStatus.ACTIVE.value
+    config_active = bool(status["configStatus"] == active_value)
+    if args and args.wait and config_active:
+        while status["configStatus"] == active_value:
+            print(".", end="")
+            time.sleep(1)
+            status = cfg.status()
+        print("")
     if args and args.format == "json":
-        status = cfg.status()
         if status["expires"] != ua_status.UserFacingStatus.INAPPLICABLE.value:
             status["expires"] = str(status["expires"])
         print(json.dumps(status))
