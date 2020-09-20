@@ -104,6 +104,12 @@ class UAClientBehaveConfig:
     :param debs_path:
         Location of the debs to be used when lauching a focal integration
         test. If that path is None, we will build those debs locally.
+    :param build_userdata:
+        String representing either raw userdata or a file containing userdata
+        which will be provided to the build vm.
+    :param test_userdata:
+        String representing either raw userdata or a file containing userdata
+        which will be provided to the test vm.
     """
 
     prefix = "UACLIENT_BEHAVE_"
@@ -126,6 +132,7 @@ class UAClientBehaveConfig:
         "private_key_name",
         "reuse_image",
         "debs_path",
+        "build_userdata",
     ]
     redact_options = [
         "aws_access_key_id",
@@ -163,6 +170,7 @@ class UAClientBehaveConfig:
         contract_token: str = None,
         contract_token_staging: str = None,
         debs_path: str = None,
+        build_userdata: str = None,
         cmdline_tags: "List" = []
     ) -> None:
         # First, store the values we've detected
@@ -183,6 +191,7 @@ class UAClientBehaveConfig:
         self.reuse_image = reuse_image
         self.cmdline_tags = cmdline_tags
         self.debs_path = debs_path
+        self.build_userdata = build_userdata
         self.filter_series = set(
             [
                 tag.split(".")[1]
@@ -218,14 +227,18 @@ class UAClientBehaveConfig:
             "uaclient-ci-%m%d-"
         ) + os.environ.get("TRAVIS_JOB_NUMBER", "dev")
         timed_job_tag = timed_job_tag.replace(".", "-")
-        if "aws" in self.machine_type:
+        if "lxd.container" == self.machine_type:
+            self.cloud_manager = cloud.LXD(
+                machine_type=self.machine_type, tag=timed_job_tag
+            )
+            self.cloud_api = self.cloud_manager.api
+        elif "aws" in self.machine_type:
             self.cloud_manager = cloud.EC2(
                 aws_access_key_id,
                 aws_secret_access_key,
                 region=os.environ.get("AWS_DEFAULT_REGION", "us-east-2"),
                 machine_type=self.machine_type,
                 tag=timed_job_tag,
-                timestamp_suffix=False,
             )
             self.cloud_api = self.cloud_manager.api
         elif "azure" in self.machine_type:
@@ -236,7 +249,6 @@ class UAClientBehaveConfig:
                 az_subscription_id=az_subscription_id,
                 machine_type=self.machine_type,
                 tag=timed_job_tag,
-                timestamp_suffix=False,
             )
             self.cloud_api = self.cloud_manager.api
 
@@ -453,6 +465,34 @@ def _capture_container_as_image(
         return image_name
 
 
+def _get_userdata_for_context_series(context, series, is_build=False) -> str:
+    """Return userdata if applicable for the given context and series."""
+    user_data = ""
+    if is_build:
+        if context.config.build_userdata:
+            if os.path.exists(context.config.build_userdata):
+                with open(context.config.build_userdata, "r") as stream:
+                    user_data = stream.read()
+            else:
+                user_data = context.config.build_userdata
+    elif context.config.test_userdata:
+        if os.path.exists(context.config.build_userdata):
+            with open(context.config.build_userdata, "r") as stream:
+                user_data = stream.read()
+        else:
+            user_data = context.config.build_userdata
+
+    if not user_data:
+        if series == "trusty":
+            apt_source = USERDATA_APT_SOURCE_DAILY_TRUSTY
+        else:
+            apt_source = USERDATA_APT_SOURCE_DAILY
+        user_data = USERDATA_INSTALL_DAILY_PRO_UATOOLS.format(
+            apt_source=apt_source
+        )
+    return user_data
+
+
 def build_debs_from_dev_instance(context: Context, series: str) -> "List[str]":
     """Create a development instance, instal build dependencies and build debs
 
@@ -481,28 +521,22 @@ def build_debs_from_dev_instance(context: Context, series: str) -> "List[str]":
         print(
             "--- Launching vm to build ubuntu-advantage*debs from local source"
         )
+        build_container_name = (
+            "behave-image-pre-build-%s-" % series + time_suffix
+        )
         if context.config.cloud_manager:
             cloud_manager = context.config.cloud_manager
-            if series == "trusty":
-                apt_source = USERDATA_APT_SOURCE_DAILY_TRUSTY
-            else:
-                apt_source = USERDATA_APT_SOURCE_DAILY
-            user_data = USERDATA_INSTALL_DAILY_PRO_UATOOLS.format(
-                apt_source=apt_source
+            user_data = _get_userdata_for_context_series(
+                context, series, is_build=True
             )
-            inst = cloud_manager.launch(series=series, user_data=user_data)
-
-            def cleanup_instance() -> None:
-                if not context.config.destroy_instances:
-                    print("--- Leaving instance running: {}".format(inst.id))
-                else:
-                    inst.delete(wait=False)
+            launch_kwargs = {"series": series, "user_data": user_data}
+            if context.config.machine_type.startswith("lxd"):
+                launch_kwargs["name"] = build_container_name
+            inst = cloud_manager.launch(**launch_kwargs)
 
             build_container_name = cloud_manager.get_instance_id(inst)
+
         else:
-            build_container_name = (
-                "behave-image-pre-build-%s-" % series + time_suffix
-            )
             is_vm = bool(context.config.machine_type == "lxd.vm")
             if is_vm and series == "xenial":
                 # FIXME: use lxd custom cloud images which containt HWE kernel
@@ -523,6 +557,18 @@ def build_debs_from_dev_instance(context: Context, series: str) -> "List[str]":
                 output_deb_dir=LOCAL_BUILD_ARTIFACTS_DIR,
                 cloud_api=context.config.cloud_api,
             )
+
+        def cleanup_instance() -> None:
+            if not context.config.destroy_instances:
+                print(
+                    "--- Leaving instance running: {}".format(
+                        build_container_name
+                    )
+                )
+            else:
+                inst.delete(wait=False)
+
+        context.add_cleanup(cleanup_instance)
 
     if "pro" in context.config.machine_type:
         return deb_paths
@@ -558,26 +604,24 @@ def create_uat_image(context: Context, series: str) -> None:
     print(
         "--- Launching VM to create a base image with updated ubuntu-advantage"
     )
+    is_vm = bool(context.config.machine_type == "lxd.vm")
+    build_container_name = "behave-image-build-%s-%s" % (
+        "-vm" if is_vm else "",
+        series + time_suffix,
+    )
     if context.config.cloud_manager:
-        if series == "trusty":
-            apt_source = USERDATA_APT_SOURCE_DAILY_TRUSTY
-        else:
-            apt_source = USERDATA_APT_SOURCE_DAILY
-        user_data = USERDATA_INSTALL_DAILY_PRO_UATOOLS.format(
-            apt_source=apt_source
+        cloud_manager = context.config.cloud_manager
+        user_data = _get_userdata_for_context_series(
+            context, series, is_build=True
         )
-        inst = context.config.cloud_manager.launch(
-            series=series, user_data=user_data
-        )
-        build_container_name = context.config.cloud_manager.get_instance_id(
+        launch_kwargs = {"series": series, "user_data": user_data}
+        if context.config.machine_type.startswith("lxd"):
+            launch_kwargs["name"] = build_container_name
+        inst = cloud_manager.launch(**launch_kwargs)
+        build_container_name = cloud_manager.get_instance_id(
             inst
         )
     else:
-        is_vm = bool(context.config.machine_type == "lxd.vm")
-        build_container_name = "behave-image-build-%s-%s" % (
-            "-vm" if is_vm else "",
-            series + time_suffix,
-        )
         if is_vm and series == "xenial":
             # FIXME: use lxd custom cloud images which containt HWE kernel for
             # vhost-vsock support

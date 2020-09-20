@@ -25,7 +25,6 @@ class Cloud:
         of the provided tag.
     """
 
-    name = ""
     pro_ids_path = ""
     env_vars: "Tuple[str, ...]" = ()
 
@@ -34,7 +33,7 @@ class Cloud:
         machine_type: str,
         region: "Optional[str]" = None,
         tag: "Optional[str]" = None,
-        timestamp_suffix: bool = True,
+        timestamp_suffix: bool = False,
     ) -> None:
         if tag:
             self.tag = tag
@@ -79,8 +78,9 @@ class Cloud:
         series: str,
         image_name: "Optional[str]" = None,
         user_data: "Optional[str]" = None,
+        name: "Optional[str]" = None,
     ) -> pycloudlib.instance:
-        """Create an instance for on the cloud provider.
+        """Launch an instance on the cloud provider.
 
         :param series:
             The ubuntu release to be used when creating an instance. We will
@@ -94,42 +94,18 @@ class Cloud:
         :returns:
             A cloud provider instance
         """
-        raise NotImplementedError
+        if not image_name:
+            image_name = self.locate_image_name(series)
 
-    def launch(
-        self,
-        series: str,
-        image_name: "Optional[str]" = None,
-        user_data: "Optional[str]" = None,
-    ) -> pycloudlib.instance.BaseInstance:
-        """Create and wait for cloud provider instance to be ready.
-
-        :param series:
-            The ubuntu release to be used when creating an instance. We will
-            create an image based on this value if the used does not provide
-            a image_name value
-        :param image_name:
-            The name of the image to be used when creating the instance
-        :param user_data:
-            The user data to be passed when creating the instance
-
-        :returns:
-            An cloud provider instance
-        """
-        inst = self._create_instance(series, image_name, user_data)
         print(
-            "--- {} instance launched: {}. Waiting for ssh access".format(
-                self.name, inst.id
+            "--- Launching {} image {}({})".format(
+                self.api._type, image_name, series
             )
         )
-        time.sleep(15)
-        for sleep in (5, 10, 15):
-            try:
-                inst.wait()
-                break
-            except Exception as e:
-                print("--- Retrying instance.wait on {}".format(str(e)))
-
+        launch_kwargs = {"image_id": image_name, "user_data": user_data}
+        if name:
+            launch_kwargs["name"] = name
+        inst = self.api.launch(**launch_kwargs)
         return inst
 
     def get_instance_id(
@@ -143,7 +119,49 @@ class Cloud:
         :returns:
             The string of the unique instance id
         """
-        return instance.id
+        instance_id = getattr(instance, "id", None)
+        if not instance_id:
+            instance_id = instance.name
+        return instance_id
+
+    def launch(
+        self,
+        series: str,
+        image_name: "Optional[str]" = None,
+        user_data: "Optional[str]" = None,
+        name: "Optional[str]" = None,
+    ) -> pycloudlib.instance.BaseInstance:
+        """Create and wait for cloud provider instance to be ready.
+
+        :param series:
+            The ubuntu release to be used when creating an instance. We will
+            create an image based on this value if the used does not provide
+            a image_name value
+        :param image_name:
+            The name of the image to be used when creating the instance
+        :param user_data:
+            The user data to be passed when creating the instance
+        :param name:
+            The name of the instance to create.
+
+        :returns:
+            An cloud provider instance
+        """
+        inst = self._create_instance(series, image_name, user_data, name)
+        print(
+            "--- {} instance launched: {}. Waiting for ssh access".format(
+                self.api._type, self.get_instance_id(inst)
+            )
+        )
+        time.sleep(15)
+        for sleep in (5, 10, 15):
+            try:
+                inst.wait()
+                break
+            except Exception as e:
+                print("--- Retrying instance.wait on {}".format(str(e)))
+
+        return inst
 
     def format_missing_env_vars(self, missing_env_vars: "List") -> "List[str]":
         """Format missing env vars to be displayed in log.
@@ -190,6 +208,26 @@ class Cloud:
             image_name = self.api.daily_image(release=series)
 
         return image_name
+
+
+class LXD(Cloud):
+    """Class that represents the LXD cloud provider."""
+
+    @property
+    def api(self) -> pycloudlib.cloud.BaseCloud:
+        """Return the api used to interact with the cloud provider."""
+        if self._api is None:
+            self._api = pycloudlib.LXD(
+                tag=self.tag, timestamp_suffix=self.timestamp_suffix
+            )
+        return self._api
+
+    def manage_ssh_key(
+        self,
+        private_key_path: "Optional[str]" = None,
+        key_name: "Optional[str]" = None,
+    ) -> None:
+        pass
 
 
 class EC2(Cloud):
@@ -291,6 +329,7 @@ class EC2(Cloud):
         series: str,
         image_name: "Optional[str]" = None,
         user_data: "Optional[str]" = None,
+        name: "Optional[str]" = None,
     ) -> pycloudlib.instance:
         """Launch an instance on the cloud provider.
 
@@ -309,7 +348,11 @@ class EC2(Cloud):
         if not image_name:
             image_name = self.locate_image_name(series)
 
-        print("--- Launching AWS image {}({})".format(image_name, series))
+        print(
+            "--- Launching {} image {}({})".format(
+                self.api._type, image_name, series
+            )
+        )
         vpc = self.api.get_or_create_vpc(name="uaclient-integration")
 
         try:
@@ -390,21 +433,6 @@ class Azure(Cloud):
 
         return self._api
 
-    def get_instance_id(
-        self, instance: pycloudlib.instance.BaseInstance
-    ) -> str:
-        """Return the instance identifier.
-
-        :param instance:
-            An instance created on the cloud provider
-
-        :returns:
-            The string of the unique instance id
-        """
-        # For Azure, the API identifier uses the instance name
-        # instead of the instance id
-        return instance.name
-
     def manage_ssh_key(self, private_key_path: "Optional[str]" = None) -> None:
         """Create and manage ssh key pairs to be used in the cloud provider.
 
@@ -435,30 +463,3 @@ class Azure(Cloud):
             os.chmod(private_key_path, 0o600)
 
         self.api.use_key(pub_key_path, private_key_path, self.key_name)
-
-    def _create_instance(
-        self,
-        series: str,
-        image_name: "Optional[str]" = None,
-        user_data: "Optional[str]" = None,
-    ) -> pycloudlib.instance:
-        """Launch an instance on the cloud provider.
-
-        :param series:
-            The ubuntu release to be used when creating an instance. We will
-            create an image based on this value if the used does not provide
-            a image_name value
-        :param image_name:
-            The name of the image to be used when creating the instance
-        :param user_data:
-            The user data to be passed when creating the instance
-
-        :returns:
-            An AWS cloud provider instance
-        """
-        if not image_name:
-            image_name = self.locate_image_name(series)
-
-        print("--- Launching Azure image {}({})".format(image_name, series))
-        inst = self.api.launch(image_id=image_name, user_data=user_data)
-        return inst

@@ -1,6 +1,7 @@
 import datetime
 import subprocess
 import shlex
+import time
 
 from behave import given, then, when
 from hamcrest import assert_that, equal_to, matches_regexp, not_
@@ -64,6 +65,20 @@ def given_a_machine(context, series):
             container_name=context.container_name,
             is_vm=is_vm,
         )
+
+
+@when("I reboot")
+def when_i_reboot(context):
+    if context.config.cloud_manager:
+        context.instance.restart()
+    else:
+        process = lxc_exec(
+            context.container_name,
+            ["sudo", "reboot"],
+            capture_output=True,
+            text=True,
+        )
+        time.sleep(5)
 
 
 @when("I run `{command}` {user_spec}")

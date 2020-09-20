@@ -363,7 +363,7 @@ def build_debs(
     if cloud_api:
         instance = cloud_api.get_instance(instance_id=container_name)
         for filepath in (buildscript, SOURCE_PR_TGZ):
-            print("--- Push {} -> {}:/tmp".format(filepath, instance.id))
+            print("--- Push {} -> {}:/tmp".format(filepath, container_name))
             instance.push_file(filepath, "/tmp/" + os.path.basename(filepath))
         instance.execute(["sudo", "bash", "/tmp/" + buildscript])
         deb_artifacts = []
@@ -371,7 +371,7 @@ def build_debs(
             deb_artifacts.append(output_deb_dir + deb)
             print(
                 "--- Pull {}:/tmp/{} {}".format(
-                    instance.id, deb, output_deb_dir
+                    container_name, deb, output_deb_dir
                 )
             )
             instance.pull_file("/tmp/" + deb, output_deb_dir + deb)
